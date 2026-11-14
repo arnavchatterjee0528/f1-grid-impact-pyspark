@@ -1,0 +1,13 @@
+data/
+archive/
+*.zip
+__pycache__/
+*.pyc
+spark-warehouse/
+metastore_db/
+derby.log
+run_log.txt
+report/logo.png
+*.docx
+*.pdf
+.ipynb_checkpoints/

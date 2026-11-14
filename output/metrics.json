@@ -1,0 +1,89 @@
+{
+  "timings_s": {
+    "ingest_14_tables": 6.934,
+    "clean_and_join": 7.493,
+    "q_corr_by_decade": 2.498,
+    "q_overtaking_index": 0.853,
+    "q_phase_gains": 5.083,
+    "train_random_forest": 12.282,
+    "train_gbt": 53.786,
+    "spark_overtaking_index_uncached": 0.743,
+    "spark_overtaking_index_cached": 0.332,
+    "spark_lap_agg_1_partitions": 0.053,
+    "spark_lap_agg_2_partitions": 0.122,
+    "spark_lap_agg_4_partitions": 0.115,
+    "spark_lap_agg_8_partitions": 0.167,
+    "pandas_lap_agg_incl_read": 0.237,
+    "spark_lap_agg_incl_read": 0.877,
+    "check_groups_spark": 11041,
+    "check_groups_pandas": 11041
+  },
+  "quality": {
+    "results_rows_raw": 26759,
+    "results_completeness_raw_%": {
+      "grid": 100.0,
+      "position": 59.07,
+      "positionOrder": 100.0,
+      "milliseconds": 28.7,
+      "fastestLap": 30.84
+    },
+    "results_rows_after_dedup": 26668,
+    "duplicate_rows_removed": 91,
+    "lap_rows": 589081,
+    "results_rows_clean": 26668,
+    "results_completeness_clean_%": {
+      "grid_clean": 100.0,
+      "positionOrder": 100.0,
+      "quali_gap_pct": 38.77,
+      "year": 100.0,
+      "circuit": 100.0
+    }
+  },
+  "train_rows": 5517,
+  "test_rows": 440,
+  "baseline_grid_equals_finish": {
+    "rmse": 5.147,
+    "mae": 3.698,
+    "r2": 0.203
+  },
+  "random_forest": {
+    "rmse": 4.329,
+    "mae": 3.356,
+    "r2": 0.436
+  },
+  "rf_feature_importance": {
+    "grid_clean": 0.3387,
+    "quali_gap_pct": 0.1946,
+    "quali_missing": 0.001,
+    "driver_form5": 0.1383,
+    "constructor_form5": 0.2516,
+    "circuit_oi": 0.0393,
+    "round": 0.0365
+  },
+  "gbt": {
+    "rmse": 4.672,
+    "mae": 3.588,
+    "r2": 0.343
+  },
+  "random_forest_paper_features_incl_laps": {
+    "rmse": 3.522,
+    "mae": 2.636,
+    "r2": 0.627
+  },
+  "random_forest_classified_only": {
+    "rmse": 3.247,
+    "mae": 2.464,
+    "r2": 0.606
+  },
+  "random_forest_paper_features_classified_only": {
+    "rmse": 3.291,
+    "mae": 2.518,
+    "r2": 0.595
+  },
+  "test_rows_classified_only": 386,
+  "paper_tabnet_driver_model": {
+    "rmse": 2.87,
+    "mae": 2.17,
+    "r2": 0.75
+  }
+}
