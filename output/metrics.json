@@ -1,20 +1,20 @@
 {
   "timings_s": {
-    "ingest_14_tables": 6.934,
-    "clean_and_join": 7.493,
-    "q_corr_by_decade": 2.498,
-    "q_overtaking_index": 0.853,
-    "q_phase_gains": 5.083,
-    "train_random_forest": 12.282,
-    "train_gbt": 53.786,
-    "spark_overtaking_index_uncached": 0.743,
-    "spark_overtaking_index_cached": 0.332,
-    "spark_lap_agg_1_partitions": 0.053,
-    "spark_lap_agg_2_partitions": 0.122,
-    "spark_lap_agg_4_partitions": 0.115,
-    "spark_lap_agg_8_partitions": 0.167,
-    "pandas_lap_agg_incl_read": 0.237,
-    "spark_lap_agg_incl_read": 0.877,
+    "ingest_14_tables": 7.264,
+    "clean_and_join": 7.826,
+    "q_corr_by_decade": 2.852,
+    "q_overtaking_index": 0.806,
+    "q_phase_gains": 5.567,
+    "train_random_forest": 9.446,
+    "train_gbt": 29.565,
+    "spark_overtaking_index_uncached": 0.873,
+    "spark_overtaking_index_cached": 0.357,
+    "spark_lap_agg_1_partitions": 0.071,
+    "spark_lap_agg_2_partitions": 0.116,
+    "spark_lap_agg_4_partitions": 0.109,
+    "spark_lap_agg_8_partitions": 0.15,
+    "pandas_lap_agg_incl_read": 0.251,
+    "spark_lap_agg_incl_read": 0.995,
     "check_groups_spark": 11041,
     "check_groups_pandas": 11041
   },
@@ -47,38 +47,38 @@
     "r2": 0.203
   },
   "random_forest": {
-    "rmse": 4.329,
-    "mae": 3.356,
-    "r2": 0.436
+    "rmse": 4.327,
+    "mae": 3.355,
+    "r2": 0.437
   },
   "rf_feature_importance": {
-    "grid_clean": 0.3387,
-    "quali_gap_pct": 0.1946,
-    "quali_missing": 0.001,
-    "driver_form5": 0.1383,
-    "constructor_form5": 0.2516,
-    "circuit_oi": 0.0393,
-    "round": 0.0365
+    "grid_clean": 0.3399,
+    "quali_gap_pct": 0.2017,
+    "quali_missing": 0.0008,
+    "driver_form5": 0.1403,
+    "constructor_form5": 0.2398,
+    "circuit_oi": 0.0405,
+    "round": 0.0371
   },
   "gbt": {
-    "rmse": 4.672,
-    "mae": 3.588,
-    "r2": 0.343
+    "rmse": 4.666,
+    "mae": 3.587,
+    "r2": 0.345
   },
   "random_forest_paper_features_incl_laps": {
-    "rmse": 3.522,
-    "mae": 2.636,
-    "r2": 0.627
+    "rmse": 3.517,
+    "mae": 2.63,
+    "r2": 0.628
   },
   "random_forest_classified_only": {
-    "rmse": 3.247,
-    "mae": 2.464,
-    "r2": 0.606
+    "rmse": 3.223,
+    "mae": 2.451,
+    "r2": 0.612
   },
   "random_forest_paper_features_classified_only": {
-    "rmse": 3.291,
-    "mae": 2.518,
-    "r2": 0.595
+    "rmse": 3.288,
+    "mae": 2.519,
+    "r2": 0.596
   },
   "test_rows_classified_only": 386,
   "paper_tabnet_driver_model": {

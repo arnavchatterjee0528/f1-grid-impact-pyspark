@@ -216,11 +216,23 @@ def build_features(res, train_end=2022):
 FEATURES = ["grid_clean", "quali_gap_pct", "quali_missing", "driver_form5", "constructor_form5", "circuit_oi", "round"]
 
 
+def split(frame, cols, train_end=2022, test_year=2023):
+    """Assemble features and split by season. The training set is put in one partition in a fixed
+    (raceId, driverId) order: Spark's Random Forest bootstrap depends on row order, so this makes
+    results identical between this script and the notebook, run after run."""
+    d = VectorAssembler(inputCols=cols, outputCol="features").transform(frame).select(
+        "raceId", "driverId", "year", "grid_clean", "features", F.col("positionOrder").cast("double").alias("label"))
+    train = d.filter(F.col("year") <= train_end).coalesce(1).sortWithinPartitions("raceId", "driverId").cache()
+    test = d.filter(F.col("year") == test_year).cache()
+    return train, test
+
+
+def rf_model():
+    return RandomForestRegressor(featuresCol="features", labelCol="label", numTrees=200, maxDepth=8, seed=42)
+
+
 def run_models(df, metrics, train_end=2022, test_year=2023):
-    asm = VectorAssembler(inputCols=FEATURES, outputCol="features")
-    data = asm.transform(df).select("year", "grid_clean", "features", F.col("positionOrder").cast("double").alias("label"))
-    train = data.filter(F.col("year") <= train_end).cache()
-    test = data.filter(F.col("year") == test_year).cache()
+    train, test = split(df, FEATURES, train_end, test_year)
     metrics["train_rows"], metrics["test_rows"] = train.count(), test.count()
 
     def evaluate(pred, name):
@@ -234,36 +246,29 @@ def run_models(df, metrics, train_end=2022, test_year=2023):
     # baseline: predicted finish = grid position
     evaluate(test.withColumn("prediction", F.col("grid_clean").cast("double")), "baseline_grid_equals_finish")
 
-    rf = RandomForestRegressor(featuresCol="features", labelCol="label", numTrees=200, maxDepth=8, seed=42)
-    rf_model = timed("train_random_forest", lambda: rf.fit(train), metrics.setdefault("timings_s", {}))
-    rf_pred = evaluate(rf_model.transform(test), "random_forest")
-    metrics["rf_feature_importance"] = {f: round(float(v), 4) for f, v in zip(FEATURES, rf_model.featureImportances.toArray())}
+    rf = timed("train_random_forest", lambda: rf_model().fit(train), metrics.setdefault("timings_s", {}))
+    rf_pred = evaluate(rf.transform(test), "random_forest")
+    metrics["rf_feature_importance"] = {f: round(float(v), 4) for f, v in zip(FEATURES, rf.featureImportances.toArray())}
 
     gbt = GBTRegressor(featuresCol="features", labelCol="label", maxIter=100, maxDepth=5, seed=42)
     gbt_model = timed("train_gbt", lambda: gbt.fit(train), metrics["timings_s"])
     evaluate(gbt_model.transform(test), "gbt")
 
-    # Replication check: the paper's feature set (grid, laps completed, constructor, round).
-    # 'laps' is only known AFTER the race, so this shows how much of the paper's lower error comes from it.
+    # Replication checks against the paper:
+    # (1) the paper's inputs, incl. 'laps' completed, which is only known AFTER the race
+    # (2) the paper's filter: rows with no finish position (non-classified drivers) removed
     pf = ["grid_clean", "laps", "constructorId", "round"]
-    pdata = (VectorAssembler(inputCols=pf, outputCol="features")
-             .transform(df.withColumn("laps", F.col("laps").cast("double")).withColumn("constructorId", F.col("constructorId").cast("double")))
-             .select("year", "features", F.col("positionOrder").cast("double").alias("label")))
-    ptrain, ptest = pdata.filter(F.col("year") <= train_end), pdata.filter(F.col("year") == test_year)
-    prf = RandomForestRegressor(featuresCol="features", labelCol="label", numTrees=200, maxDepth=8, seed=42).fit(ptrain)
-    evaluate(prf.transform(ptest), "random_forest_paper_features_incl_laps")
+    dfp = df.withColumn("laps", F.col("laps").cast("double")).withColumn("constructorId", F.col("constructorId").cast("double"))
+    finishers = F.col("position").isNotNull()
 
-    # Paper-faithful filter: the paper dropped rows with no finish position, i.e. non-classified drivers (DNFs)
-    cls = df.filter(F.col("position").isNotNull())
-    cdata = asm.transform(cls).select("year", "features", F.col("positionOrder").cast("double").alias("label"))
-    crf = RandomForestRegressor(featuresCol="features", labelCol="label", numTrees=200, maxDepth=8, seed=42).fit(cdata.filter(F.col("year") <= train_end))
-    evaluate(crf.transform(cdata.filter(F.col("year") == test_year)), "random_forest_classified_only")
-    cp = (VectorAssembler(inputCols=pf, outputCol="features")
-          .transform(cls.withColumn("laps", F.col("laps").cast("double")).withColumn("constructorId", F.col("constructorId").cast("double")))
-          .select("year", "features", F.col("positionOrder").cast("double").alias("label")))
-    cprf = RandomForestRegressor(featuresCol="features", labelCol="label", numTrees=200, maxDepth=8, seed=42).fit(cp.filter(F.col("year") <= train_end))
-    evaluate(cprf.transform(cp.filter(F.col("year") == test_year)), "random_forest_paper_features_classified_only")
-    metrics["test_rows_classified_only"] = cls.filter(F.col("year") == test_year).count()
+    def rf_eval(frame, cols, name):
+        tr, te = split(frame, cols, train_end, test_year)
+        evaluate(rf_model().fit(tr).transform(te), name)
+
+    rf_eval(dfp, pf, "random_forest_paper_features_incl_laps")
+    rf_eval(df.filter(finishers), FEATURES, "random_forest_classified_only")
+    rf_eval(dfp.filter(finishers), pf, "random_forest_paper_features_classified_only")
+    metrics["test_rows_classified_only"] = df.filter(finishers & (F.col("year") == test_year)).count()
 
     metrics["paper_tabnet_driver_model"] = {"rmse": 2.87, "mae": 2.17, "r2": 0.75}
     return rf_pred
