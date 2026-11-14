@@ -1,22 +1,13 @@
 {
   "timings_s": {
-    "ingest_14_tables": 7.264,
-    "clean_and_join": 7.826,
-    "q_corr_by_decade": 2.852,
-    "q_overtaking_index": 0.806,
-    "q_phase_gains": 5.567,
-    "train_random_forest": 9.446,
-    "train_gbt": 29.565,
-    "spark_overtaking_index_uncached": 0.873,
-    "spark_overtaking_index_cached": 0.357,
-    "spark_lap_agg_1_partitions": 0.071,
-    "spark_lap_agg_2_partitions": 0.116,
-    "spark_lap_agg_4_partitions": 0.109,
-    "spark_lap_agg_8_partitions": 0.15,
-    "pandas_lap_agg_incl_read": 0.251,
-    "spark_lap_agg_incl_read": 0.995,
-    "check_groups_spark": 11041,
-    "check_groups_pandas": 11041
+    "ingest_14_tables": 10.117,
+    "clean_and_join": 9.517,
+    "q_corr_by_decade": 3.094,
+    "q_overtaking_index": 1.052,
+    "q_decomposed_dynamics": 14.499,
+    "train_random_forest": 11.51,
+    "train_gbt": 37.327,
+    "train_random_forest_classified_only": 9.134
   },
   "quality": {
     "results_rows_raw": 26759,
@@ -70,7 +61,19 @@
     "mae": 2.63,
     "r2": 0.628
   },
-  "random_forest_classified_only": {
+  "classified_train_rows": 4580,
+  "test_rows_classified_only": 386,
+  "baseline_grid_equals_finish_common_classified_test": {
+    "rmse": 4.371,
+    "mae": 3.218,
+    "r2": 0.286
+  },
+  "random_forest_all_training_common_classified_test": {
+    "rmse": 3.421,
+    "mae": 2.778,
+    "r2": 0.562
+  },
+  "random_forest_classified_training_common_test": {
     "rmse": 3.223,
     "mae": 2.451,
     "r2": 0.612
@@ -80,10 +83,16 @@
     "mae": 2.519,
     "r2": 0.596
   },
-  "test_rows_classified_only": 386,
-  "paper_tabnet_driver_model": {
-    "rmse": 2.87,
-    "mae": 2.17,
-    "r2": 0.75
+  "external_research_benchmark_not_reproduced": {
+    "source": "Atharva Urdhwareshe (2025), The Use of Machine Learning in Predicting Formula 1 Race Outcomes",
+    "doi": "10.20944/preprints202504.1471.v1",
+    "status": "preprint; not peer reviewed",
+    "model": "TabNet driver model",
+    "reported_metrics": {
+      "rmse": 2.87,
+      "mae": 2.17,
+      "r2": 0.75
+    },
+    "comparison_note": "Published paper result only; not directly comparable because dataset, features, filtering, and experiment implementation differ."
   }
 }

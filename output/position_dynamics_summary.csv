@@ -1,0 +1,5 @@
+component,total_events,denominator,rate,rate_definition
+1_opening_lap_position_change_proxy,5561.5,5808,0.9576,Estimated position-change units / driver with Lap 1 observation
+2_pit_transit_events,11371.0,314466,0.0362,Pit stops / consecutive active driver-lap transitions
+3_nonfinisher_related_gains,4064.0,314466,0.0129,Estimated positions gained / consecutive active driver-lap transitions
+4_normal_running_position_change_proxy,6130.0,314466,0.0195,Estimated position-change units / consecutive active driver-lap transitions

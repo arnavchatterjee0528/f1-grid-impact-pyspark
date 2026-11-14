@@ -163,34 +163,221 @@ def analysis_overtaking_index(res, min_races=5, from_year=2010):
                .orderBy(F.desc("overtaking_index")))
 
 
-def analysis_phase_gains(res, laps, pits):
-    """Average positions gained per driver-race in each race phase (1996+ lap data)."""
-    base = res.select("raceId", "driverId", "grid_clean")
-    lp = laps.select("raceId", "driverId", "lap", F.col("position").cast("int").alias("pos")).join(base, ["raceId", "driverId"])
-    w = Window.partitionBy("raceId", "driverId").orderBy("lap")
-    lp = lp.withColumn("prev_pos", F.coalesce(F.lag("pos").over(w), F.col("grid_clean")))
-    lp = lp.withColumn("delta", F.col("prev_pos") - F.col("pos"))
-    lp = lp.withColumn("race_laps", F.max("lap").over(Window.partitionBy("raceId")))
-    if pits is not None:
-        p = pits.select("raceId", "driverId", F.col("lap").alias("pit_lap"))
-        # a pit cycle = pit lap and the 2 laps after it
-        cyc = (p.withColumn("off", F.explode(F.array(F.lit(0), F.lit(1), F.lit(2))))
-                .select("raceId", "driverId", (F.col("pit_lap") + F.col("off")).alias("lap"))
-                .dropDuplicates().withColumn("in_pit_cycle", F.lit(1)))
-        lp = lp.join(cyc, ["raceId", "driverId", "lap"], "left").fillna({"in_pit_cycle": 0})
-    else:
-        lp = lp.withColumn("in_pit_cycle", F.lit(0))
-    lp = lp.withColumn("phase",
-                       F.when(F.col("lap") == 1, "1_start (lap 1)")
-                        .when(F.col("in_pit_cycle") == 1, "2_pit cycle")
-                        .when(F.col("lap") > F.col("race_laps") * 2 / 3, "4_final third")
-                        .otherwise("3_middle (no pit)"))
-    per_driver = lp.groupBy("raceId", "driverId", "phase").agg(F.sum("delta").alias("gain"))
-    n_dr = lp.select("raceId", "driverId").distinct().count()
-    return (per_driver.groupBy("phase")
-                      .agg((F.sum(F.abs("gain")) / F.lit(n_dr)).alias("avg_abs_positions_changed_per_driver_race"),
-                           (F.sum("gain") / F.lit(n_dr)).alias("avg_net_gain_per_driver_race"))
-                      .orderBy("phase"))
+def analysis_decomposed_dynamics(res, laps, pits, status_df, from_year=2011):
+    """
+    Decomposed Position Dynamics Framework (Modern Era, 2011-2024).
+    Separates:
+      1. Opening-lap position changes (grid vs line 1).
+      2. Pit-stop-related position drop and post-pit stabilisation.
+      3. Retirement-related position gains (DNFs dropping out).
+      4. Normal-running position swaps (track swap proxy between timing lines).
+      5. Final grid-to-finish position changes.
+    """
+    if pits is None:
+        raise ValueError("pit_stops table is required for decomposed position dynamics.")
+
+    # 1. Base modern tables (2011-2024)
+    res_m = res.filter(F.col("year") >= from_year).select(
+        "raceId", "year", "driverId", "grid_clean", "positionOrder", "statusId"
+    )
+    laps_m = laps.join(res_m.select("raceId", "year").distinct(), "raceId").select(
+        "raceId", "year", "driverId", "lap", F.col("position").cast("int").alias("pos")
+    )
+    pits_m = pits.join(res_m.select("raceId", "year").distinct(), "raceId").select(
+        "raceId", "driverId", "stop", "lap", "duration", "milliseconds"
+    )
+
+    # ---------------------------------------------------- A. Opening Lap Analysis
+    l1 = laps_m.filter(F.col("lap") == 1).select(
+        "raceId", "driverId", F.col("pos").alias("lap1_pos")
+    )
+    op = res_m.join(l1, ["raceId", "driverId"], "left")
+    # A missing Lap 1 timing record is not proof of a DNF or a non-start.
+    op = op.withColumn("missing_lap1_observation",
+                       F.when(F.col("lap1_pos").isNull(), 1).otherwise(0))
+    op = op.withColumn(
+        "lap1_gain",
+        F.when(F.col("lap1_pos").isNotNull(), F.col("grid_clean") - F.col("lap1_pos"))
+    )
+
+    op_summary = (
+        op.groupBy("year")
+          .agg(
+              F.count("*").alias("classified_result_entries"),
+              F.sum("missing_lap1_observation").alias("missing_lap1_observations"),
+              F.count("lap1_pos").alias("lap1_observed_drivers"),
+              F.avg("lap1_gain").alias("mean_net_lap1_gain"),
+              F.avg(F.abs("lap1_gain")).alias("mean_abs_lap1_places_changed"),
+              (F.sum(F.abs("lap1_gain")) / 2.0).alias("estimated_lap1_swaps")
+          )
+          .orderBy("year")
+    )
+
+    # ---------------------------------------------------- B. Pit Stop Impact Analysis
+    # Immediate position drop: pre-pit (lap - 1) vs pit lap
+    # Stabilised position: post-pit (lap + 2) vs pre-pit
+    p_prep = (
+        pits_m.join(
+            laps_m.select("raceId", "driverId", (F.col("lap") + 1).alias("lap"), F.col("pos").alias("pre_pit_pos")),
+            ["raceId", "driverId", "lap"], "left"
+        )
+        .join(
+            laps_m.select("raceId", "driverId", F.col("lap"), F.col("pos").alias("pit_lap_pos")),
+            ["raceId", "driverId", "lap"], "left"
+        )
+        .join(
+            laps_m.select("raceId", "driverId", (F.col("lap") - 2).alias("lap"), F.col("pos").alias("stabilised_pos")),
+            ["raceId", "driverId", "lap"], "left"
+        )
+    )
+    # Positions lost during transit: pre_pit_pos - pit_lap_pos (negative indicates drop)
+    p_prep = p_prep.withColumn("immediate_transit_drop", F.col("pre_pit_pos") - F.col("pit_lap_pos"))
+    p_prep = p_prep.withColumn("net_strategic_delta_2laps", F.col("pre_pit_pos") - F.col("stabilised_pos"))
+
+    pit_summary = (
+        p_prep.groupBy("stop")
+              .agg(
+                  F.count("*").alias("pit_events_total"),
+                  F.count("immediate_transit_drop").alias("valid_immediate_position_pairs"),
+                  F.count("net_strategic_delta_2laps").alias("valid_two_lap_position_pairs"),
+                  F.avg("immediate_transit_drop").alias("avg_immediate_transit_drop"),
+                  F.avg("net_strategic_delta_2laps").alias("avg_net_delta_after_2laps"),
+                  F.avg(F.abs("immediate_transit_drop")).alias("avg_abs_immediate_transit_volatility")
+              )
+              .filter(F.col("stop") <= 4)
+              .orderBy("stop")
+    )
+
+    # ---------------------------------------------------- C. Running Laps & Non-finishers
+    # Sequence of running laps for lap >= 2
+    w_drv = Window.partitionBy("raceId", "driverId").orderBy("lap")
+    laps_seq = laps_m.withColumn("prev_pos", F.lag("pos", 1).over(w_drv))
+    laps_seq = laps_seq.withColumn("prev_lap", F.lag("lap", 1).over(w_drv))
+    # Keep strictly consecutive laps
+    running = laps_seq.filter(
+        (F.col("lap") >= 2) & (F.col("prev_lap") == (F.col("lap") - 1)) & F.col("prev_pos").isNotNull()
+    )
+
+    # Exclude transitions in a race/lap window where ANY driver pits on lap k or k-1.
+    pit_laps_window = (
+        pits_m.select("raceId", F.col("lap").alias("p_lap"))
+              .withColumn("off", F.explode(F.array(F.lit(0), F.lit(1))))
+              .select("raceId", (F.col("p_lap") + F.col("off")).alias("lap"))
+              .dropDuplicates()
+              .withColumn("race_lap_has_pit_event", F.lit(1))
+    )
+    running = (running.join(pit_laps_window, ["raceId", "lap"], "left")
+                      .fillna({"race_lap_has_pit_event": 0}))
+
+    # Broad non-finisher category, not confirmed mechanical/on-track retirements.
+    # Status data also includes disqualifications, withdrawals and other outcomes.
+    res_status = res_m.join(status_df, "statusId", "left")
+    finished_cond = F.col("status").rlike(r"^(Finished|\+\d+ Laps?)$")
+    nonfinishers = res_status.filter(~finished_cond).select("raceId", "driverId")
+
+    # Last recorded lap is only an approximate exit point for a non-finisher.
+    max_lap_per_nonfinisher = (
+        laps_m.join(nonfinishers, ["raceId", "driverId"], "inner")
+              .groupBy("raceId", "driverId")
+              .agg(F.max("lap").alias("last_recorded_lap"))
+    )
+    nonfinisher_pos = (
+        max_lap_per_nonfinisher.join(
+            laps_m.select("raceId", "driverId", "lap", F.col("pos").alias("nonfinisher_pos")),
+            (max_lap_per_nonfinisher.raceId == laps_m.raceId) &
+            (max_lap_per_nonfinisher.driverId == laps_m.driverId) &
+            (max_lap_per_nonfinisher.last_recorded_lap == laps_m.lap),
+            "inner"
+        )
+        .select(
+            max_lap_per_nonfinisher.raceId,
+            (max_lap_per_nonfinisher.last_recorded_lap + 1).alias("lap"),
+            "nonfinisher_pos"
+        )
+    )
+
+    # Count non-finishers whose last recorded position was ahead
+    ret_ahead = (
+        running.join(nonfinisher_pos, ["raceId", "lap"], "inner")
+               .filter(F.col("prev_pos") > F.col("nonfinisher_pos"))
+               .groupBy("raceId", "driverId", "lap")
+               .agg(F.count("*").alias("nonfinisher_ahead_count"))
+    )
+    running = running.join(ret_ahead, ["raceId", "driverId", "lap"], "left").fillna({"nonfinisher_ahead_count": 0})
+
+    # Delta positions gained on timing line
+    running = running.withColumn("raw_delta", F.col("prev_pos") - F.col("pos"))
+    # Estimated non-finisher-related gain, based on last recorded position
+    running = running.withColumn(
+        "nonfinisher_gain",
+        F.least(
+            F.when(F.col("raw_delta") > 0, F.col("raw_delta")).otherwise(F.lit(0)),
+            F.col("nonfinisher_ahead_count")
+        )
+    )
+
+    nonfinisher_summary = (
+        running.filter(F.col("nonfinisher_ahead_count") > 0)
+               .groupBy("year")
+               .agg(
+                   F.countDistinct("raceId").alias("races_with_nonfinishers"),
+                   F.sum("nonfinisher_gain").alias("estimated_nonfinisher_positions_gained"),
+                   F.avg("nonfinisher_gain").alias("avg_estimated_gain_per_active_driver_on_nonfinisher_laps")
+               )
+               .orderBy("year")
+    )
+
+    # ---------------------------------------------------- D. Normal-Running Swaps Proxy
+    # This is a position-change proxy, NOT a verified pairwise overtake count.
+    # Only retain transitions outside any race/lap window containing a pit stop.
+    running = running.withColumn(
+        "is_normal_position_change_proxy",
+        F.when((F.col("race_lap_has_pit_event") == 0) &
+               (F.col("nonfinisher_gain") == 0) &
+               (F.col("raw_delta") != 0), 1).otherwise(0)
+    )
+
+    normal_position_changes_yearly = (
+        running.groupBy("year")
+               .agg(
+                   F.count("*").alias("active_driver_laps"),
+                   F.sum("race_lap_has_pit_event").alias("driver_lap_transitions_in_race_laps_with_pits"),
+                   F.sum("nonfinisher_gain").alias("estimated_nonfinisher_gains"),
+                   F.sum("is_normal_position_change_proxy").alias("normal_position_change_driver_laps"),
+                   F.sum(F.when(F.col("is_normal_position_change_proxy") == 1, F.abs("raw_delta")).otherwise(0)).alias("normal_total_places_changed"),
+                   (F.sum(F.when(F.col("is_normal_position_change_proxy") == 1, F.abs("raw_delta")).otherwise(0)) / 2.0).alias("estimated_normal_position_change_units"),
+                   (100.0 * (F.sum(F.when(F.col("is_normal_position_change_proxy") == 1, F.abs("raw_delta")).otherwise(0)) / 2.0) / F.count("*")).alias("estimated_position_change_units_per_100_driver_lap_transitions")
+               )
+               .orderBy("year")
+    )
+
+    # ---------------------------------------------------- E. Overall Dynamics Summary
+    total_active_laps = running.count()
+    total_lap1_observed = int(op.agg(F.count("lap1_pos")).first()[0] or 0)
+    total_lap1_swaps = float(op.agg(F.sum(F.abs("lap1_gain")) / 2.0).first()[0] or 0.0)
+    total_pit_stops = pits_m.count()
+    total_nonfinisher_gains = int(running.agg(F.sum("nonfinisher_gain")).first()[0] or 0)
+    total_normal_changes = float(running.filter(F.col("is_normal_position_change_proxy") == 1).agg(F.sum(F.abs("raw_delta")) / 2.0).first()[0] or 0.0)
+
+    summary_rows = [
+        ("1_opening_lap_position_change_proxy", total_lap1_swaps, total_lap1_observed,
+         round(total_lap1_swaps / total_lap1_observed, 4) if total_lap1_observed else 0.0,
+         "Estimated position-change units / driver with Lap 1 observation"),
+        ("2_pit_transit_events", float(total_pit_stops), total_active_laps,
+         round(float(total_pit_stops) / total_active_laps, 4) if total_active_laps else 0.0,
+         "Pit stops / consecutive active driver-lap transitions"),
+        ("3_nonfinisher_related_gains", float(total_nonfinisher_gains), total_active_laps,
+         round(float(total_nonfinisher_gains) / total_active_laps, 4) if total_active_laps else 0.0,
+         "Estimated positions gained / consecutive active driver-lap transitions"),
+        ("4_normal_running_position_change_proxy", total_normal_changes, total_active_laps,
+         round(total_normal_changes / total_active_laps, 4) if total_active_laps else 0.0,
+         "Estimated position-change units / consecutive active driver-lap transitions"),
+    ]
+    summary_df = res.sql_ctx.createDataFrame(
+        summary_rows, ["component", "total_events", "denominator", "rate", "rate_definition"]
+    )
+
+    return op_summary, pit_summary, nonfinisher_summary, normal_position_changes_yearly, summary_df
 
 
 # ---------------------------------------------------------------- ML (comparison with paper)
@@ -266,11 +453,44 @@ def run_models(df, metrics, train_end=2022, test_year=2023):
         evaluate(rf_model().fit(tr).transform(te), name)
 
     rf_eval(dfp, pf, "random_forest_paper_features_incl_laps")
-    rf_eval(df.filter(finishers), FEATURES, "random_forest_classified_only")
-    rf_eval(dfp.filter(finishers), pf, "random_forest_paper_features_classified_only")
-    metrics["test_rows_classified_only"] = df.filter(finishers & (F.col("year") == test_year)).count()
 
-    metrics["paper_tabnet_driver_model"] = {"rmse": 2.87, "mae": 2.17, "r2": 0.75}
+    # Fair comparison: evaluate the all-entry RF and a finisher-only RF
+    # on exactly the same classified test rows.
+    classified_df = df.filter(finishers)
+    tr_classified, te_classified = split(classified_df, FEATURES, train_end, test_year)
+    metrics["classified_train_rows"] = tr_classified.count()
+    metrics["test_rows_classified_only"] = te_classified.count()
+
+    evaluate(
+        te_classified.withColumn("prediction", F.col("grid_clean").cast("double")),
+        "baseline_grid_equals_finish_common_classified_test"
+    )
+    evaluate(
+        rf.transform(te_classified),
+        "random_forest_all_training_common_classified_test"
+    )
+    classified_rf = timed(
+        "train_random_forest_classified_only",
+        lambda: rf_model().fit(tr_classified),
+        metrics["timings_s"]
+    )
+    evaluate(
+        classified_rf.transform(te_classified),
+        "random_forest_classified_training_common_test"
+    )
+
+    rf_eval(dfp.filter(finishers), pf, "random_forest_paper_features_classified_only")
+
+    # External result from Urdhwareshe (2025), not trained or reproduced here.
+    # The paper is a preprint and uses a different dataset/features/experiment.
+    metrics["external_research_benchmark_not_reproduced"] = {
+        "source": "Atharva Urdhwareshe (2025), The Use of Machine Learning in Predicting Formula 1 Race Outcomes",
+        "doi": "10.20944/preprints202504.1471.v1",
+        "status": "preprint; not peer reviewed",
+        "model": "TabNet driver model",
+        "reported_metrics": {"rmse": 2.87, "mae": 2.17, "r2": 0.75},
+        "comparison_note": "Published paper result only; not directly comparable because dataset, features, filtering, and experiment implementation differ."
+    }
     return rf_pred
 
 
@@ -328,7 +548,7 @@ def _save(fig, out, name):
     plt.close(fig)
 
 
-def charts(corr_pd, oi_pd, phase_pd, pred_pd, rmse, out):
+def charts(corr_pd, oi_pd, pit_pd, pred_pd, rmse, out):
     # 1. grid-finish correlation by decade
     fig, ax = plt.subplots(figsize=(7.5, 3.6))
     x, y = corr_pd["decade"], corr_pd["grid_finish_corr"]
@@ -352,20 +572,19 @@ def charts(corr_pd, oi_pd, phase_pd, pred_pd, rmse, out):
     _style(ax, f"Hardest tracks to gain places: {c3[0]}, {c3[1]} and {c3[2]}", "Circuit overtaking index, 2010–2024, circuits with at least 5 races (orange = 3 lowest)")
     _save(fig, out, "chart_overtaking_index.png")
 
-    # 3. net places gained per race phase (diverging about zero)
-    labels = {"1_start (lap 1)": "Lap 1", "2_pit cycle": "Pit-stop laps", "3_middle (no pit)": "Middle stint", "4_final third": "Final third"}
-    ph = phase_pd.copy(); ph["label"] = ph["phase"].map(labels)
-    v = ph["avg_net_gain_per_driver_race"]
+    # 3. Pit-stop position impact by stop number.
+    pit_plot = pit_pd.sort_values("stop")
     fig, ax = plt.subplots(figsize=(7.5, 3.6))
-    ax.bar(ph["label"], v, color=[BLUE if a >= 0 else ORANGE for a in v], width=0.55)
+    vals = pit_plot["avg_immediate_transit_drop"]
+    ax.bar(pit_plot["stop"].astype(str), vals,
+           color=[ORANGE if v < 0 else BLUE for v in vals], width=0.58)
     ax.axhline(0, color=MUTED, lw=1)
-    for i, a in enumerate(v):
-        ax.text(i, a + (0.15 if a >= 0 else -0.15), f"{a:+.1f}", ha="center", va="bottom" if a >= 0 else "top", fontsize=9, color=INK)
-    ax.yaxis.grid(True, color=GRID, lw=0.8); ax.set_ylabel("Net places gained per driver", fontsize=9, color=MUTED)
-    ax.set_ylim(min(v) - 1, max(v) + 1)
-    _style(ax, f"Drivers drop {abs(v.iloc[1]):.1f} places around pit stops and win {v.iloc[2]:.1f} back mid-race",
-           "Avg net places gained per driver per race, 1996–2024 lap data (pit-stop laps identified from 2011)")
-    _save(fig, out, "chart_phase_gains.png")
+    ax.yaxis.grid(True, color=GRID, lw=0.8)
+    ax.set_xlabel("Pit stop number", fontsize=9, color=MUTED)
+    ax.set_ylabel("Mean position change (pre-pit minus pit lap)", fontsize=9, color=MUTED)
+    _style(ax, "Position change around pit stops",
+           "Negative values indicate a worse timing-line position on the pit lap; descriptive association, not causal pit loss")
+    _save(fig, out, "chart_pit_stop_impact.png")
 
     # 4. predicted vs actual, 2023 test season
     fig, ax = plt.subplots(figsize=(5.2, 5.0))
@@ -399,10 +618,43 @@ def main():
 
     corr = timed("q_corr_by_decade", lambda: analysis_corr_by_decade(res).toPandas(), report["timings_s"])
     oi = timed("q_overtaking_index", lambda: analysis_overtaking_index(res).toPandas(), report["timings_s"])
-    phase = timed("q_phase_gains", lambda: analysis_phase_gains(res, laps, dfs.get("pit_stops")).toPandas(), report["timings_s"])
+    # Decomposed Position Dynamics Framework (2011-2024)
+    print("\n--- Running Decomposed Position Dynamics Framework ---")
+    op_summary, pit_summary, nonfinisher_summary, normal_position_changes_yearly, summary_df = timed(
+        "q_decomposed_dynamics",
+        lambda: analysis_decomposed_dynamics(res, laps, dfs.get("pit_stops"), dfs["status"]),
+        report["timings_s"]
+    )
+    op_pd = op_summary.toPandas()
+    pit_pd = pit_summary.toPandas()
+    nonfinisher_pd = nonfinisher_summary.toPandas()
+    norm_pd = normal_position_changes_yearly.toPandas()
+    sum_pd = summary_df.toPandas()
+
+    op_pd.to_csv(os.path.join(a.out, "opening_lap_analysis.csv"), index=False)
+    pit_pd.to_csv(os.path.join(a.out, "pit_stop_impact.csv"), index=False)
+    nonfinisher_pd.to_csv(os.path.join(a.out, "nonfinisher_impact.csv"), index=False)
+    norm_pd.to_csv(os.path.join(a.out, "normal_running_position_changes.csv"), index=False)
+    sum_pd.to_csv(os.path.join(a.out, "position_dynamics_summary.csv"), index=False)
+
+    # Validations & assertions
+    assert len(op_pd) > 0, "opening_lap_analysis must not be empty"
+    assert len(pit_pd) > 0, "pit_stop_impact must not be empty"
+    assert len(nonfinisher_pd) > 0, "nonfinisher_impact must not be empty"
+    assert len(norm_pd) > 0, "normal_running_swaps must not be empty"
+    assert len(sum_pd) == 4, "position_dynamics_summary must contain exactly 4 components"
+    assert op_pd["lap1_observed_drivers"].sum() > 0, "Lap 1 observations must be positive"
+    assert norm_pd["active_driver_laps"].sum() > 0, "Active driver laps must be positive"
+
+    # The previous phase_gains.csv was a synthetic combination of unrelated
+    # metrics, not a valid race-phase analysis. Remove stale legacy outputs.
+    for stale_name in ("phase_gains.csv", "chart_phase_gains.png"):
+        stale_path = os.path.join(a.out, stale_name)
+        if os.path.exists(stale_path):
+            os.remove(stale_path)
+
     corr.to_csv(os.path.join(a.out, "corr_by_decade.csv"), index=False)
     oi.to_csv(os.path.join(a.out, "overtaking_index.csv"), index=False)
-    phase.to_csv(os.path.join(a.out, "phase_gains.csv"), index=False)
 
     feats = build_features(res)
     pred = run_models(feats, report)
@@ -412,7 +664,7 @@ def main():
     if not a.skip_perf:
         performance(spark, res, a.data, report["timings_s"])
 
-    charts(corr, oi, phase, pred_pd, report["random_forest"]["rmse"], a.out)
+    charts(corr, oi, pit_pd, pred_pd, report["random_forest"]["rmse"], a.out)
     with open(os.path.join(a.out, "metrics.json"), "w") as f:
         json.dump(report, f, indent=2, default=str)
     print(json.dumps(report, indent=2, default=str))
