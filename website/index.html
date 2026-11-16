@@ -49,8 +49,8 @@
 body { margin: 0; }
 img { max-width: 100%; }
 [hidden] { display: none !important; }
-html { scroll-behavior: smooth; scroll-padding-top: calc(64px + env(safe-area-inset-top, 0px)); }
-@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } * { transition: none !important; animation: none !important; } }
+html { scroll-padding-top: calc(64px + env(safe-area-inset-top, 0px)); }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
 body {
   background: var(--bg); color: var(--ink);
   font: 400 16px/1.6 var(--font-body);
@@ -250,7 +250,6 @@ select { font: 500 14px/1.2 var(--font-body); padding: 9px 34px 9px 12px; border
 .rx-chart { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 12px 4px; }
 .towerlist { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
 .towerlist .tower-h { padding: 10px 12px; }
-.tl { max-height: 560px; overflow-y: auto; }
 .tl button {
   width: 100%; display: grid; grid-template-columns: 26px 44px minmax(0, 1fr) 54px; gap: 8px; align-items: center;
   padding: 7px 12px; border: 0; border-bottom: 1px solid var(--grid); background: transparent; color: var(--ink); cursor: pointer; text-align: left; font: inherit;
@@ -294,7 +293,6 @@ footer ul { list-style: none; padding: 0; margin: 0; display: grid; gap: 6px; }
   .dyn > div:nth-child(2) { border-right: 0; }
   .dyn > div:nth-child(-n+2) { border-bottom: 1px solid var(--line); }
   .rx { grid-template-columns: minmax(0, 1fr); }
-  .tl { max-height: 360px; }
   .pred-grid, .cols-2 { grid-template-columns: minmax(0, 1fr); }
   .cols-3 { grid-template-columns: minmax(0, 1fr); }
   .cols-4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -961,6 +959,8 @@ function highlight(src) {
     } catch (e) { selectCode(); done("Selected, press Ctrl+C"); }
   });
   function selectCode() { const r = document.createRange(); r.selectNodeContents(box); const s = getSelection(); s.removeAllRanges(); s.addRange(r); }
+  const maxLines = Math.max(...CODE.map((c) => c.code.split("\n").length));
+  box.style.minHeight = `calc(${maxLines} * 1.6em + 32px)`;
   show(0);
 })();
 
@@ -1291,11 +1291,70 @@ chart("chPerf", (el, w) => {
 /* ------------------------------------------------ 11 history */
 document.querySelector("#histTable tbody").innerHTML = DATA.history.map((h) => `<tr><td>${esc(h.date)}</td><td>${esc(h.message)}</td></tr>`).join("");
 
-/* ------------------------------------------------ nav highlight */
+/* ------------------------------------------------ nav: smooth jump to a section + scroll-spy
+   The highlight only ever scrolls the nav strip sideways; it never moves the page. */
 (function () {
-  const links = [...document.querySelectorAll(".nav a")], map = new Map(links.map((a) => [a.getAttribute("href").slice(1), a]));
-  const io = new IntersectionObserver((ents) => ents.forEach((e) => { if (e.isIntersecting) { links.forEach((a) => a.classList.remove("on")); const a = map.get(e.target.id); if (a) { a.classList.add("on"); a.scrollIntoView({ block: "nearest", inline: "nearest" }); } } }), { rootMargin: "-45% 0px -50% 0px" });
-  document.querySelectorAll("section.s").forEach((s) => io.observe(s));
+  const nav = document.querySelector(".nav"), header = document.querySelector(".top");
+  const links = [...nav.querySelectorAll("a")];
+  const secs = links.map((a) => document.getElementById(a.getAttribute("href").slice(1)));
+  const reduce = window.matchMedia("(prefers-reduced-motion: reduce)");
+  let lock = null, active = -2, ticking = false;
+  const headerH = () => header.getBoundingClientRect().bottom;
+  const targetY = (el) => Math.max(0, Math.round(el.getBoundingClientRect().top + window.scrollY - headerH() - 8));
+
+  function setActive(i) {
+    if (i === active) return;
+    active = i;
+    links.forEach((a, j) => { a.classList.toggle("on", j === i); if (j === i) a.setAttribute("aria-current", "true"); else a.removeAttribute("aria-current"); });
+    if (i < 0) return;
+    const a = links[i], left = a.offsetLeft - (nav.clientWidth - a.offsetWidth) / 2;
+    nav.scrollTo({ left: Math.max(0, left), behavior: reduce.matches ? "auto" : "smooth" });
+  }
+  function spy() {
+    ticking = false;
+    if (lock) return;
+    const line = headerH() + window.innerHeight * 0.3;
+    let cur = -1;
+    secs.forEach((sec, i) => { if (sec && sec.getBoundingClientRect().top <= line) cur = i; });
+    if (window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 4) cur = secs.length - 1;
+    setActive(cur);
+  }
+  window.addEventListener("scroll", () => { if (!ticking) { ticking = true; requestAnimationFrame(spy); } }, { passive: true });
+
+  function go(i, smooth) {
+    const el = secs[i];
+    if (!el) return;
+    const me = {}; lock = me; setActive(i);
+    window.scrollTo({ top: targetY(el), behavior: smooth && !reduce.matches ? "smooth" : "auto" });
+    let t;
+    const done = () => {
+      window.removeEventListener("scroll", onScroll);
+      if (lock !== me) return;                       // the reader took over: leave the page where they put it
+      const y = targetY(el);                          // correct any drift from late layout (fonts, charts)
+      if (Math.abs(window.scrollY - y) > 2) window.scrollTo({ top: y, behavior: "auto" });
+      lock = null; spy();
+    };
+    const onScroll = () => { clearTimeout(t); t = setTimeout(done, 120); };
+    window.addEventListener("scroll", onScroll, { passive: true });
+    t = setTimeout(done, 450);                        // covers the case where no scrolling is needed
+  }
+  nav.addEventListener("click", (e) => {
+    const a = e.target.closest("a");
+    if (!a) return;
+    e.preventDefault();
+    go(links.indexOf(a), true);
+    try { history.replaceState(null, "", a.getAttribute("href")); } catch (_) { /* hash not available in this frame */ }
+  });
+  document.querySelector(".brand").addEventListener("click", (e) => {
+    e.preventDefault(); lock = null;
+    window.scrollTo({ top: 0, behavior: reduce.matches ? "auto" : "smooth" });
+    try { history.replaceState(null, "", location.pathname + location.search); } catch (_) { /* ignore */ }
+  });
+  // a wheel, touch or key press during a jump hands control back to the reader
+  ["wheel", "touchstart", "keydown"].forEach((ev) => window.addEventListener(ev, () => { lock = null; }, { passive: true }));
+
+  const start = secs.findIndex((sec) => sec && "#" + sec.id === location.hash);
+  if (start >= 0) requestAnimationFrame(() => go(start, false)); else spy();
 })();
 })();
 </script>
