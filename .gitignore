@@ -14,3 +14,4 @@ report/logo.png
 notebook/data
 notebook/notebook_output/
 !notebook/F1_BDA_Analysis.pdf
+website/dist/

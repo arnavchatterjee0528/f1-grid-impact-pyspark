@@ -90,6 +90,15 @@ python f1_bda_pipeline.py --data ./data --out ./output
 
 **On Google Colab:** upload the CSVs to a `data` folder, then run `!pip install pyspark` followed by `!python f1_bda_pipeline.py --data data --out output`. Colab already has Java.
 
+## Website
+
+`website/index.html` is an interactive walkthrough of the project: the data, the cleaning steps, the Spark code, every finding as an interactive chart, a lap-by-lap explorer for all 2024 races, and the model results. Open it in a browser (it loads D3 and fonts from a CDN). To rebuild it after re-running the pipeline:
+
+```bash
+python website/build_site_data.py --data ./data --out ./output   # numbers from output/ + raw CSVs
+python website/build_site.py                                     # writes website/index.html
+```
+
 ## Workflow
 
 ```
@@ -107,6 +116,7 @@ Data (14 CSVs) → Cleaning → Processing → Analysis → Insights
 | --- | --- |
 | `f1_bda_pipeline.py` | The whole pipeline |
 | `output/` | Results from the full run: CSVs, `metrics.json`, charts, 2023 predictions |
+| `website/` | Interactive project website (`index.html`) and the scripts that build it from `output/` |
 | `notebook/` | Executed step-by-step notebook (`.ipynb`, `.html`, `.pdf`) and the script that builds it |
 | `report/` | Scripts that build the print-sized figures and the 4-page report from `output/` |
 | `requirements.txt` | Python dependencies |
