@@ -190,7 +190,8 @@ pre .s { color: var(--up); }
 pre .k { color: var(--c1); }
 
 /* charts */
-.chart { position: relative; width: 100%; min-width: 0; }
+.chart { position: relative; width: 100%; min-width: 0; contain: layout style; }
+html.is-scrolling main { pointer-events: none; }
 .chart svg { display: block; width: 100%; height: auto; overflow: visible; }
 .chart text { fill: var(--muted); font: 400 12px var(--font-body); }
 .chart .axis path, .chart .axis line { stroke: var(--line); }
@@ -214,7 +215,7 @@ pre .k { color: var(--c1); }
 .ctrl > div:first-child { min-width: 0; }
 
 #tip {
-  position: fixed; z-index: 50; pointer-events: none; opacity: 0; transition: opacity .12s;
+  position: fixed; left: 0; top: 0; z-index: 50; pointer-events: none; opacity: 0; transition: opacity .12s; will-change: transform, opacity;
   background: var(--ink); color: var(--bg); padding: 8px 10px; border-radius: 5px; font-size: 13px; line-height: 1.45;
   max-width: 260px; box-shadow: 0 6px 20px rgba(0,0,0,.18);
 }
@@ -740,15 +741,26 @@ document.querySelectorAll("[data-k]").forEach((el) => { el.textContent = K[el.da
 
 /* ------------------------------------------------ tooltip */
 const tip = document.getElementById("tip");
+let tipHtml = "", tipW = 0, tipH = 0;
 function showTip(html, ev) {
-  tip.innerHTML = html; tip.style.opacity = 1;
-  const r = tip.getBoundingClientRect(), pad = 14;
+  if (document.documentElement.classList.contains("is-scrolling")) return;
+  if (html !== tipHtml) { tip.innerHTML = html; tipHtml = html; tipW = tip.offsetWidth; tipH = tip.offsetHeight; }
+  const pad = 14;
   let x = ev.clientX + pad, y = ev.clientY + pad;
-  if (x + r.width > window.innerWidth - 8) x = ev.clientX - r.width - pad;
-  if (y + r.height > window.innerHeight - 8) y = ev.clientY - r.height - pad;
-  tip.style.left = Math.max(8, x) + "px"; tip.style.top = Math.max(8, y) + "px";
+  if (x + tipW > window.innerWidth - 8) x = ev.clientX - tipW - pad;
+  if (y + tipH > window.innerHeight - 8) y = ev.clientY - tipH - pad;
+  tip.style.transform = `translate3d(${Math.max(8, x)}px, ${Math.max(8, y)}px, 0)`;
+  tip.style.opacity = 1;
 }
 function hideTip() { tip.style.opacity = 0; }
+/* while the page is scrolling, charts ignore the mouse (no hover redraws mid-scroll) */
+(function () {
+  const root = document.documentElement; let t = null;
+  window.addEventListener("scroll", () => {
+    if (!t) { root.classList.add("is-scrolling"); hideTip(); }
+    clearTimeout(t); t = setTimeout(() => { root.classList.remove("is-scrolling"); t = null; }, 140);
+  }, { passive: true });
+})();
 
 /* ------------------------------------------------ chart registry: re-render on resize and theme change */
 const charts = [];
@@ -1301,17 +1313,28 @@ document.querySelector("#histTable tbody").innerHTML = DATA.history.map((h) => `
     links.forEach((a, j) => { a.classList.toggle("on", j === i); if (j === i) a.setAttribute("aria-current", "true"); else a.removeAttribute("aria-current"); });
     if (i < 0) return;
     const a = links[i], left = a.offsetLeft - (nav.clientWidth - a.offsetWidth) / 2;
-    nav.scrollTo({ left: Math.max(0, left), behavior: reduce.matches ? "auto" : "smooth" });
+    nav.scrollLeft = Math.max(0, left);
+  }
+  let tops = [], hdr = 56, docH = 0;
+  function measure() {
+    hdr = headerH();
+    tops = secs.map((sec) => (sec ? sec.getBoundingClientRect().top + window.scrollY : Infinity));
+    docH = document.documentElement.scrollHeight;
   }
   function spy() {
     ticking = false;
     if (lock) return;
-    const line = headerH() + window.innerHeight * 0.3;
+    const line = window.scrollY + hdr + window.innerHeight * 0.3;
     let cur = -1;
-    secs.forEach((sec, i) => { if (sec && sec.getBoundingClientRect().top <= line) cur = i; });
-    if (window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 4) cur = secs.length - 1;
+    for (let i = 0; i < tops.length; i++) if (tops[i] <= line) cur = i;
+    if (window.innerHeight + window.scrollY >= docH - 4) cur = secs.length - 1;
     setActive(cur);
   }
+  measure();
+  let mt; const remeasure = () => { clearTimeout(mt); mt = setTimeout(() => { measure(); spy(); }, 200); };
+  window.addEventListener("resize", remeasure);
+  new ResizeObserver(remeasure).observe(document.querySelector("main"));
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(remeasure);
   window.addEventListener("scroll", () => { if (!ticking) { ticking = true; requestAnimationFrame(spy); } }, { passive: true });
 
   function go(i, smooth) {
